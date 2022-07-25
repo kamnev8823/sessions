@@ -9,6 +9,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -114,7 +115,7 @@ func GetRegistry(r *http.Request) *Registry {
 	}
 	newRegistry := &Registry{
 		request:  r,
-		sessions: make(map[string]sessionInfo),
+		sessions: sync.Map{},
 	}
 	*r = *r.WithContext(context.WithValue(ctx, registryKey, newRegistry))
 	return newRegistry
@@ -123,7 +124,7 @@ func GetRegistry(r *http.Request) *Registry {
 // Registry stores sessions used during a request.
 type Registry struct {
 	request  *http.Request
-	sessions map[string]sessionInfo
+	sessions sync.Map
 }
 
 // Get registers and returns a session for the given name and session store.
@@ -133,12 +134,15 @@ func (s *Registry) Get(store Store, name string) (session *Session, err error) {
 	if !isCookieNameValid(name) {
 		return nil, fmt.Errorf("sessions: invalid character in cookie name: %s", name)
 	}
-	if info, ok := s.sessions[name]; ok {
-		session, err = info.s, info.e
+
+	if infoIfc, ok := s.sessions.Load(name); ok {
+		if info, correct := infoIfc.(sessionInfo); correct {
+			session, err = info.s, info.e
+		}
 	} else {
 		session, err = store.New(s.request, name)
 		session.name = name
-		s.sessions[name] = sessionInfo{s: session, e: err}
+		s.sessions.Store(name, sessionInfo{s: session, e: err})
 	}
 	session.store = store
 	return
@@ -147,16 +151,26 @@ func (s *Registry) Get(store Store, name string) (session *Session, err error) {
 // Save saves all sessions registered for the current request.
 func (s *Registry) Save(w http.ResponseWriter) error {
 	var errMulti MultiError
-	for name, info := range s.sessions {
-		session := info.s
+	s.sessions.Range(func(key, value interface{}) bool {
+		var session *Session
+
+		if info, ok := value.(sessionInfo); !ok {
+			return true
+		} else {
+			session = info.s
+		}
+
 		if session.store == nil {
 			errMulti = append(errMulti, fmt.Errorf(
-				"sessions: missing store for session %q", name))
+				"sessions: missing store for session %q", key))
 		} else if err := session.store.Save(s.request, w, session); err != nil {
 			errMulti = append(errMulti, fmt.Errorf(
-				"sessions: error saving session %q -- %v", name, err))
+				"sessions: error saving session %q -- %v", key, err))
 		}
-	}
+
+		return true
+	})
+
 	if errMulti != nil {
 		return errMulti
 	}
