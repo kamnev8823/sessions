@@ -127,6 +127,15 @@ type Registry struct {
 	sessions sync.Map
 }
 
+// getSessionInfo return session info.
+func (s *Registry) getSessionInfo(key interface{}) (info sessionInfo, ok bool) {
+	if infoIfc, exists := s.sessions.Load(key); exists {
+		info, ok = infoIfc.(sessionInfo)
+	}
+
+	return
+}
+
 // Get registers and returns a session for the given name and session store.
 //
 // It returns a new session if there are no sessions registered for the name.
@@ -135,10 +144,8 @@ func (s *Registry) Get(store Store, name string) (session *Session, err error) {
 		return nil, fmt.Errorf("sessions: invalid character in cookie name: %s", name)
 	}
 
-	if infoIfc, ok := s.sessions.Load(name); ok {
-		if info, correct := infoIfc.(sessionInfo); correct {
-			session, err = info.s, info.e
-		}
+	if info, ok := s.getSessionInfo(name); ok {
+		session, err = info.s, info.e
 	} else {
 		session, err = store.New(s.request, name)
 		session.name = name
@@ -154,10 +161,10 @@ func (s *Registry) Save(w http.ResponseWriter) error {
 	s.sessions.Range(func(key, value interface{}) bool {
 		var session *Session
 
-		if info, ok := value.(sessionInfo); !ok {
-			return true
-		} else {
+		if info, ok := value.(sessionInfo); ok {
 			session = info.s
+		} else {
+			return true
 		}
 
 		if session.store == nil {
